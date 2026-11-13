@@ -192,6 +192,7 @@ import Wire.VerificationCodeStore
 import Wire.VerificationCodeStore.Cassandra
 import Wire.VerificationCodeSubsystem
 import Wire.VerificationCodeSubsystem.Interpreter
+import Wire.FederationConfigStore.Postgres (interpretFederationDomainConfigStorePostgres)
 
 type BrigCanonicalEffects = NonRecursiveEffects1 `Append` RecursiveEffects `Append` NonRecursiveEffects2
 
@@ -237,6 +238,8 @@ type BrigLowerLevelEffects =
      DomainVerificationChallengeStore,
      NonceStore,
      BlockListStore,
+     FederationConfigSubsystem,
+     FederationConfigStore,
      Error AppSubsystemError,
      Error TeamCollaboratorsError,
      Error UsageError,
@@ -276,8 +279,6 @@ type BrigLowerLevelEffects =
      Input InvitationUrlTemplates,
      Input ClientSubsystemConfig,
      GundeckAPIAccess,
-     FederationConfigSubsystem,
-     FederationConfigStore,
      Jwk,
      JwtTools,
      BudgetStore,
@@ -503,6 +504,12 @@ runBrigToIO e (AppT ma) = do
               . interpretConnectionStoreToCassandraAndPostgres
               . raiseUnder2
 
+      federationDomainConfigStoreInterpreter =
+        case e.postgresMigration.federationDomainConfig of
+          CassandraStorage -> interpretFederationConfigStoreCassandra e.casClient
+          PostgresqlStorage -> interpretFederationDomainConfigStorePostgres
+          MigrationToPostgresql -> interpretFederationConfigStoreCassandra e.casClient -- todo: implement dual write
+
   ( either throwM pure
       <=< ( runFinal
               . unsafelyPerformConcurrency
@@ -532,8 +539,6 @@ runBrigToIO e (AppT ma) = do
               . budgetStoreInterpreter
               . interpretJwtTools
               . interpretJwk
-              . interpretFederationConfigStoreCassandra e.casClient
-              . interpretFederationConfigSubsystem e.settings.federationStrategy (foldMap (remotesMapFromCfgFile . fmap (.federationDomainConfig)) e.settings.federationDomainConfigs)
               . runGundeckAPIAccess e.gundeckEndpoint
               . runInputConst clientSubsystemConfig
               . runInputConst (invitationUrlTemplates e)
@@ -573,6 +578,8 @@ runBrigToIO e (AppT ma) = do
               . mapError postgresUsageErrorToHttpError
               . mapError teamCollaboratorsSubsystemErrorToHttpError
               . mapError appSubsystemErrorToHttpError
+              . federationDomainConfigStoreInterpreter
+              . interpretFederationConfigSubsystem e.settings.federationStrategy (foldMap (remotesMapFromCfgFile . fmap (.federationDomainConfig)) e.settings.federationDomainConfigs)
               . blockListStore
               . nonceStore
               . domainVerificationChallengeStore
